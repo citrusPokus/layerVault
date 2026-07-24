@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.env
+
+# Build and package output
+build/
+dist/
+*.egg-info/
+
+# Application-local state
+*.sqlite
+*.sqlite3
+*.db
+settings.json
+user_settings.json
+logs/
+
+# Generated visual cache
+_thumbs/
+thumbnails/
+cache/
+*.log
+
+# Local USD libraries and studio content
+library/
+asset_library/
+sample_library/
+assets/
+*.usd
+*.usda
+*.usdc
+*.usdz
+*.usdz.tmp
+
+# DCC / operating-system files
+*.hip
+*.hiplc
+*.hipnc
+*.blend
+*.mb
+*.ma
+.DS_Store
+Thumbs.db
+
+# Credentials — never commit these
+*.pem
+*.key
+credentials.json
+token.txt
