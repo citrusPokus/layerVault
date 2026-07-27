@@ -37,6 +37,9 @@ assets/
 *.usdz.tmp
 
 # DCC / operating-system files
+*.usd
+*.usdc
+*.usda
 *.hip
 *.hiplc
 *.hipnc
