@@ -171,146 +171,51 @@ Maya runtime
     └── Maya plugins
 ```
 
-## Repository structure
+## Project structure (to be updated)
 
 ```text
 layervault/
-├── README.md
-├── LICENSE
-├── CONTRIBUTING.md
-├── uv.lock
-├── flake.nix
-├── flake.lock
-├── justfile
-│
-├── config/
-│   ├── runtime.toml
-│   ├── naming.toml
-│   ├── departments.toml
-│   ├── usd_policy.toml
-│   ├── default_project.toml
-│   └── dcc_profiles/
-│       ├── houdini_20_5.toml
-│       ├── maya.toml
-│       ├── nuke.toml
-│       ├── mari.toml
-│       └── blender.toml
-│
 ├── src/
 │   └── layervault/
 │       ├── __init__.py
 │       ├── __main__.py
-│       ├── cli/
-│       ├── domain/
-│       ├── filesystem/
+│       │
 │       ├── usd/
-│       ├── validation/
-│       ├── packaging/
-│       ├── indexing/
-│       ├── publishing/
-│       ├── dcc/
+│       │   ├── __init__.py
+│       │   ├── types.py
+│       │   ├── paths.py
+│       │   ├── discovery.py
+│       │   ├── metadata.py
+│       │   ├── inspection.py
+│       │   └── report.py
+│       │
+│       ├── index/
+│       │   ├── __init__.py
+│       │   ├── database.py
+│       │   └── indexer.py
+│       │
 │       ├── thumbnails/
+│       │   ├── __init__.py
+│       │   └── generator.py
+│       │
 │       ├── ui/
-│       └── infrastructure/
-│
-├── resources/
-│   ├── icons/
-│   ├── schemas/
-│   ├── templates/
-│   ├── styles/
-│   └── demo_project/
+│       │   ├── __init__.py
+│       │   ├── main_window.py
+│       │   ├── models.py
+│       │   ├── scan_worker.py
+│       │   └── details_panel.py
+│       │
+│       └── cli/
+│           ├── __init__.py
+│           └── main.py
 │
 ├── tests/
 │   ├── unit/
 │   ├── integration/
-│   ├── smoke/
-│   ├── fixtures/
-│   └── golden/
-│
-├── docs/
-│   ├── architecture/
-│   ├── decisions/
-│   ├── usd/
-│   ├── release/
-│   └── user-guides/
+│   └── fixtures/
 │
 ├── tools/
-│   ├── build_usd_linux.sh
-│   ├── build_usd_windows.ps1
-│   ├── build_app_linux.sh
-│   ├── build_app_windows.ps1
-│   ├── package_project.py
-│   └── ci/
+│   └── inspect_usd_package.py
 │
-├── docker/
-│   ├── validator/
-│   ├── packager/
-│   └── thumbnail/
-│
-└── vendor/
-    └── OpenUSD/
-```
-
----
-
-## Project structure
-
-A LayerVault project is a filesystem tree with readable configuration and versioned data.
-
-```text
-MountainEnv/
-├── project.toml
-├── config/
-│   ├── departments.toml
-│   ├── naming.toml
-│   ├── usd_policy.toml
-│   └── applications.toml
-│
-├── assets/
-│   ├── char/
-│   │   └── plane_01/
-│   │       ├── entity.toml
-│   │       ├── usd/
-│   │       ├── work/
-│   │       ├── publish/
-│   │       ├── sourceimages/
-│   │       ├── caches/
-│   │       └── renders/
-│   │
-│   ├── prop/
-│   └── env/
-│
-├── shots/
-│   └── sq010/
-│       └── sh020/
-│           ├── entity.toml
-│           ├── usd/
-│           ├── work/
-│           ├── publish/
-│           ├── caches/
-│           └── renders/
-│
-├── library/
-│   ├── materials/
-│   ├── texture_sets/
-│   ├── scans/
-│   ├── hdri/
-│   ├── ocio/
-│   ├── luts/
-│   ├── render_presets/
-│   └── usd_components/
-│
-├── tools/
-│   ├── houdini/
-│   ├── maya/
-│   ├── nuke/
-│   ├── mari/
-│   └── blender/
-│
-└── .layervault/
-    ├── index.sqlite
-    ├── cache/
-    ├── thumbnails/
-    ├── logs/
-    └── reports/
+└── pyproject.toml
 ```
