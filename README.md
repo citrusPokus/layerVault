@@ -1,13 +1,7 @@
 # LayerVault
 
-> A local-first, OpenUSD-first project, asset, resource, and dependency manager for personal and small-team CG pipelines.
-> LayerVault aims to provide a reliable foundation for personal productions, short films, look-development projects, game assets, and mostly small USD-based pipelines.
-
-LayerVault is a desktop application (and command-line toolkit for managing OpenUSD projects, assets, shots, publishes, textures, materials, caches, and DCC workfiles.
-
-It is designed for artists and technical artists who want the practical workflow benefits of tools such as Prism Pipeline or Tik Manager while keeping their data local, transparent, portable, and structured around OpenUSD composition.
-
-LayerVault treats **USD layers, immutable publishes, manifests, dependency locks, and portable packages** as first-class production objects.
+A local-first, OpenUSD-first project, asset, resource, and dependency manager for personal and small-team CG pipelines.
+LayerVault aims to provide a reliable foundation for personal productions, short films, look-development projects, game assets, and mostly small USD-based pipelines.
 
 ---
 
