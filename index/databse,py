@@ -1,0 +1,842 @@
+from __future__ import annotations
+import json
+import sqlite3
+from contextlib import closing
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+
+from ..usd.metadata import UsdAssetMetadata
+  
+DEFAULT_PAGE_SIZE = 250
+MAX_PAGE_SIZE = 1_000
+
+
+@dataclass(frozen=True, slots=True)
+class IndexedAsset:
+    """One persisted, artist-facing LayerVault USD asset root."""
+
+    id: int | None
+    library_root: str
+    root_path: str
+    package_path: str
+    relative_path: str
+    category: str
+    extension: str
+    size_bytes: int
+    modified_ns: int
+    package_hash: str
+    indexed_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class AssetDetails:
+    """The selected browser asset and its extracted USD metadata."""
+
+    asset_id: int
+    asset: IndexedAsset
+    metadata: UsdAssetMetadata
+
+
+@dataclass(frozen=True, slots=True)
+class ThumbnailRecord:
+    asset_id: int
+    image_path: str
+    image_format: str
+    width: int
+    height: int
+    file_size_bytes: int
+    content_hash: str
+    generated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class TagRecord:
+    id: int
+    name: str
+    color: str
+    description: str
+    created_at: str
+
+
+class AssetDatabase:
+    """
+    LayerVault's local metadata index.
+
+    It does not write into source USD packages or the source library. It only
+    persists LayerVault's own searchable cache and extracted metadata.
+    """
+
+    def __init__(self, database_path: Path) -> None:
+        self.database_path = database_path
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self._create_schema()
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(
+            self.database_path,
+            timeout=5.0,
+        )
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA synchronous = NORMAL")
+        connection.execute("PRAGMA temp_store = MEMORY")
+        connection.execute("PRAGMA cache_size = -32000")
+        return connection
+
+    def _create_schema(self) -> None:
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS assets (
+                        id INTEGER PRIMARY KEY,
+                        library_root TEXT NOT NULL,
+                        root_path TEXT NOT NULL,
+                        package_path TEXT NOT NULL,
+                        relative_path TEXT NOT NULL,
+                        category TEXT NOT NULL,
+                        extension TEXT NOT NULL,
+                        size_bytes INTEGER NOT NULL,
+                        modified_ns INTEGER NOT NULL,
+                        package_hash TEXT NOT NULL,
+                        indexed_at TEXT NOT NULL,
+                        name_normalized TEXT NOT NULL DEFAULT '',
+                        relative_path_normalized TEXT NOT NULL DEFAULT '',
+                        UNIQUE(library_root, root_path)
+                    )
+                    """
+                )
+
+                self._add_column_if_missing(
+                    connection,
+                    "assets",
+                    "name_normalized",
+                    "TEXT NOT NULL DEFAULT ''",
+                )
+                self._add_column_if_missing(
+                    connection,
+                    "assets",
+                    "relative_path_normalized",
+                    "TEXT NOT NULL DEFAULT ''",
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS asset_usd_metadata (
+                        asset_id INTEGER PRIMARY KEY,
+                        default_prim TEXT NOT NULL DEFAULT '',
+                        root_prim_names TEXT NOT NULL DEFAULT '[]',
+                        kind TEXT NOT NULL DEFAULT '',
+                        up_axis TEXT NOT NULL DEFAULT '',
+                        meters_per_unit REAL,
+                        meters_per_unit_authored INTEGER NOT NULL DEFAULT 0,
+                        asset_identifier TEXT NOT NULL DEFAULT '',
+                        asset_name TEXT NOT NULL DEFAULT '',
+                        asset_version TEXT NOT NULL DEFAULT '',
+                        has_payloads INTEGER NOT NULL DEFAULT 0,
+                        has_preview INTEGER NOT NULL DEFAULT 0,
+                        preview_path TEXT NOT NULL DEFAULT '',
+                        parse_status TEXT NOT NULL DEFAULT 'pending',
+                        parse_error TEXT NOT NULL DEFAULT '',
+                        extracted_at TEXT NOT NULL,
+                        FOREIGN KEY(asset_id)
+                            REFERENCES assets(id)
+                            ON DELETE CASCADE
+                    )
+                    """
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS asset_thumbnails (
+                        asset_id INTEGER PRIMARY KEY,
+                        image_path TEXT NOT NULL,
+                        image_format TEXT NOT NULL DEFAULT 'jpg',
+                        width INTEGER NOT NULL DEFAULT 0,
+                        height INTEGER NOT NULL DEFAULT 0,
+                        file_size_bytes INTEGER NOT NULL DEFAULT 0,
+                        content_hash TEXT NOT NULL DEFAULT '',
+                        generated_at TEXT NOT NULL,
+                        FOREIGN KEY(asset_id)
+                            REFERENCES assets(id)
+                            ON DELETE CASCADE
+                    )
+                    """
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS tags (
+                        id INTEGER PRIMARY KEY,
+                        name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                        color TEXT NOT NULL DEFAULT '',
+                        description TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS asset_tags (
+                        asset_id INTEGER NOT NULL,
+                        tag_id INTEGER NOT NULL,
+                        created_at TEXT NOT NULL,
+                        PRIMARY KEY(asset_id, tag_id),
+                        FOREIGN KEY(asset_id)
+                            REFERENCES assets(id)
+                            ON DELETE CASCADE,
+                        FOREIGN KEY(tag_id)
+                            REFERENCES tags(id)
+                            ON DELETE CASCADE
+                    )
+                    """
+                )
+
+                connection.execute(
+                    """
+                    UPDATE assets
+                    SET name_normalized = lower(relative_path)
+                    WHERE name_normalized = ''
+                    """
+                )
+
+                connection.execute(
+                    """
+                    UPDATE assets
+                    SET relative_path_normalized = lower(relative_path)
+                    WHERE relative_path_normalized = ''
+                    """
+                )
+
+                connection.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_assets_library_path
+                    ON assets(
+                        library_root,
+                        relative_path COLLATE NOCASE
+                    )
+                    """
+                )
+
+                connection.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_assets_library_category_path
+                    ON assets(
+                        library_root,
+                        category,
+                        relative_path COLLATE NOCASE
+                    )
+                    """
+                )
+
+                connection.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_assets_library_extension_path
+                    ON assets(
+                        library_root,
+                        extension,
+                        relative_path COLLATE NOCASE
+                    )
+                    """
+                )
+
+                connection.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_assets_library_name_prefix
+                    ON assets(
+                        library_root,
+                        name_normalized
+                    )
+                    """
+                )
+
+                connection.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_usd_metadata_kind
+                    ON asset_usd_metadata(kind)
+                    """
+                )
+
+                connection.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_usd_metadata_status
+                    ON asset_usd_metadata(parse_status)
+                    """
+                )
+
+                connection.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_asset_tags_tag_id
+                    ON asset_tags(tag_id)
+                    """
+                )
+
+                connection.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_asset_tags_asset_id
+                    ON asset_tags(asset_id)
+                    """
+                )
+
+    @staticmethod
+    def _add_column_if_missing(
+        connection: sqlite3.Connection,
+        table_name: str,
+        column_name: str,
+        column_sql: str,
+    ) -> None:
+        columns = {
+            row["name"]
+            for row in connection.execute(
+                f"PRAGMA table_info({table_name})"
+            ).fetchall()
+        }
+        if column_name not in columns:
+            connection.execute(
+                f"ALTER TABLE {table_name} "
+                f"ADD COLUMN {column_name} {column_sql}"
+            )
+
+    @staticmethod
+    def _row_to_asset(row: sqlite3.Row) -> IndexedAsset:
+        return IndexedAsset(
+            id=int(row["id"]) if "id" in row.keys() and row["id"] is not None else None,
+            library_root=row["library_root"],
+            root_path=row["root_path"],
+            package_path=row["package_path"],
+            relative_path=row["relative_path"],
+            category=row["category"],
+            extension=row["extension"],
+            size_bytes=row["size_bytes"],
+            modified_ns=row["modified_ns"],
+            package_hash=row["package_hash"],
+            indexed_at=row["indexed_at"],
+        )
+
+    @staticmethod
+    def _asset_name(relative_path: str) -> str:
+        return Path(relative_path).name
+
+    @staticmethod
+    def now_iso() -> str:
+        return datetime.now(UTC).isoformat(timespec="seconds")
+
+    def load_assets(self, library_root: Path) -> list[IndexedAsset]:
+        query = """
+        SELECT
+            id,
+            library_root,
+            root_path,
+            package_path,
+            relative_path,
+            category,
+            extension,
+            size_bytes,
+            modified_ns,
+            package_hash,
+            indexed_at
+        FROM assets
+        WHERE library_root = ?
+        ORDER BY relative_path COLLATE NOCASE, id
+        """
+
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                query,
+                (str(library_root.resolve()),),
+            ).fetchall()
+
+        return [self._row_to_asset(row) for row in rows]
+
+    def replace_library_assets_with_metadata(
+        self,
+        library_root: Path,
+        records: list[tuple[IndexedAsset, UsdAssetMetadata]],
+    ) -> None:
+        """
+        Replace one library's index in a single transaction.
+
+        Deleting a root asset also deletes its metadata through the foreign-key
+        cascade. A cancelled scan must not call this method.
+        """
+        resolved_library_root = str(library_root.resolve())
+
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.execute(
+                    "DELETE FROM assets WHERE library_root = ?",
+                    (resolved_library_root,),
+                )
+
+                for asset, metadata in records:
+                    relative_path = asset.relative_path.replace("\\", "/")
+
+                    cursor = connection.execute(
+                        """
+                        INSERT INTO assets (
+                            library_root,
+                            root_path,
+                            package_path,
+                            relative_path,
+                            category,
+                            extension,
+                            size_bytes,
+                            modified_ns,
+                            package_hash,
+                            indexed_at,
+                            name_normalized,
+                            relative_path_normalized
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            resolved_library_root,
+                            asset.root_path,
+                            asset.package_path,
+                            relative_path,
+                            asset.category,
+                            asset.extension.lower(),
+                            asset.size_bytes,
+                            asset.modified_ns,
+                            asset.package_hash,
+                            asset.indexed_at,
+                            self._asset_name(relative_path).casefold(),
+                            relative_path.casefold(),
+                        ),
+                    )
+
+                    connection.execute(
+                        """
+                        INSERT INTO asset_usd_metadata (
+                            asset_id,
+                            default_prim,
+                            root_prim_names,
+                            kind,
+                            up_axis,
+                            meters_per_unit,
+                            meters_per_unit_authored,
+                            asset_identifier,
+                            asset_name,
+                            asset_version,
+                            has_payloads,
+                            has_preview,
+                            preview_path,
+                            parse_status,
+                            parse_error,
+                            extracted_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            int(cursor.lastrowid),
+                            metadata.default_prim,
+                            metadata.root_prim_names_json(),
+                            metadata.kind,
+                            metadata.up_axis,
+                            metadata.meters_per_unit,
+                            int(metadata.meters_per_unit_authored),
+                            metadata.asset_identifier,
+                            metadata.asset_name,
+                            metadata.asset_version,
+                            int(metadata.has_payloads),
+                            int(metadata.has_preview),
+                            metadata.preview_path,
+                            metadata.parse_status,
+                            metadata.parse_error,
+                            self.now_iso(),
+                        ),
+                    )
+
+    def load_asset_details(
+        self,
+        library_root: Path,
+        root_path: Path,
+    ) -> AssetDetails | None:
+        query = """
+        SELECT
+            a.id,
+            a.library_root,
+            a.root_path,
+            a.package_path,
+            a.relative_path,
+            a.category,
+            a.extension,
+            a.size_bytes,
+            a.modified_ns,
+            a.package_hash,
+            a.indexed_at,
+
+            m.default_prim,
+            m.root_prim_names,
+            m.kind,
+            m.up_axis,
+            m.meters_per_unit,
+            m.meters_per_unit_authored,
+            m.asset_identifier,
+            m.asset_name,
+            m.asset_version,
+            m.has_payloads,
+            m.has_preview,
+            m.preview_path,
+            m.parse_status,
+            m.parse_error
+        FROM assets AS a
+        LEFT JOIN asset_usd_metadata AS m
+            ON m.asset_id = a.id
+        WHERE a.library_root = ?
+        AND a.root_path = ?
+        """
+
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                query,
+                (
+                    str(library_root.resolve()),
+                    str(root_path.resolve()),
+                ),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        asset = self._row_to_asset(row)
+
+        metadata = UsdAssetMetadata(
+            default_prim=row["default_prim"] or "",
+            root_prim_names=tuple(
+                json.loads(row["root_prim_names"] or "[]")
+            ),
+            kind=row["kind"] or "",
+            up_axis=row["up_axis"] or "",
+            meters_per_unit=row["meters_per_unit"],
+            meters_per_unit_authored=bool(
+                row["meters_per_unit_authored"] or 0
+            ),
+            asset_identifier=row["asset_identifier"] or "",
+            asset_name=row["asset_name"] or "",
+            asset_version=row["asset_version"] or "",
+            has_payloads=bool(row["has_payloads"] or 0),
+            has_preview=bool(row["has_preview"] or 0),
+            preview_path=row["preview_path"] or "",
+            parse_status=row["parse_status"] or "pending",
+            parse_error=row["parse_error"] or "",
+        )
+
+        return AssetDetails(
+            asset_id=int(row["id"]),
+            asset=asset,
+            metadata=metadata,
+        )
+
+    def find_asset_id(
+        self,
+        library_root: Path,
+        root_path: Path,
+    ) -> int | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT id
+                FROM assets
+                WHERE library_root = ? AND root_path = ?
+                """,
+                (str(library_root.resolve()), str(root_path.resolve())),
+            ).fetchone()
+
+        if row is None:
+            return None
+        return int(row["id"])
+
+    def save_thumbnail(
+        self,
+        asset_id: int,
+        image_path: str,
+        image_format: str,
+        width: int,
+        height: int,
+        file_size_bytes: int,
+        content_hash: str = "",
+    ) -> None:
+        generated_at = self.now_iso()
+
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.execute(
+                    """
+                    INSERT INTO asset_thumbnails (
+                        asset_id,
+                        image_path,
+                        image_format,
+                        width,
+                        height,
+                        file_size_bytes,
+                        content_hash,
+                        generated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(asset_id) DO UPDATE SET
+                        image_path = excluded.image_path,
+                        image_format = excluded.image_format,
+                        width = excluded.width,
+                        height = excluded.height,
+                        file_size_bytes = excluded.file_size_bytes,
+                        content_hash = excluded.content_hash,
+                        generated_at = excluded.generated_at
+                    """,
+                    (
+                        asset_id,
+                        image_path,
+                        image_format,
+                        width,
+                        height,
+                        file_size_bytes,
+                        content_hash,
+                        generated_at,
+                    ),
+                )
+
+    def load_thumbnail(self, asset_id: int) -> ThumbnailRecord | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    asset_id,
+                    image_path,
+                    image_format,
+                    width,
+                    height,
+                    file_size_bytes,
+                    content_hash,
+                    generated_at
+                FROM asset_thumbnails
+                WHERE asset_id = ?
+                """,
+                (asset_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return ThumbnailRecord(
+            asset_id=row["asset_id"],
+            image_path=row["image_path"],
+            image_format=row["image_format"],
+            width=row["width"],
+            height=row["height"],
+            file_size_bytes=row["file_size_bytes"],
+            content_hash=row["content_hash"],
+            generated_at=row["generated_at"],
+        )
+
+    def delete_thumbnail(self, asset_id: int) -> None:
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.execute(
+                    "DELETE FROM asset_thumbnails WHERE asset_id = ?",
+                    (asset_id,),
+                )
+
+    def create_tag(
+        self,
+        name: str,
+        color: str = "",
+        description: str = "",
+    ) -> int:
+        clean_name = name.strip()
+        if not clean_name:
+            raise ValueError("Tag name cannot be empty")
+
+        created_at = self.now_iso()
+
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.execute(
+                    """
+                    INSERT INTO tags (
+                        name,
+                        color,
+                        description,
+                        created_at
+                    )
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(name) DO NOTHING
+                    """,
+                    (clean_name, color, description, created_at),
+                )
+
+                row = connection.execute(
+                    """
+                    SELECT id
+                    FROM tags
+                    WHERE name = ?
+                    """,
+                    (clean_name,),
+                ).fetchone()
+
+        if row is None:
+            raise RuntimeError("Failed to create or retrieve tag")
+
+        return int(row["id"])
+
+    def list_tags(self) -> list[TagRecord]:
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    id,
+                    name,
+                    color,
+                    description,
+                    created_at
+                FROM tags
+                ORDER BY name COLLATE NOCASE
+                """
+            ).fetchall()
+
+        return [
+            TagRecord(
+                id=row["id"],
+                name=row["name"],
+                color=row["color"],
+                description=row["description"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+    def rename_tag(
+        self,
+        tag_id: int,
+        new_name: str,
+    ) -> None:
+        clean_name = new_name.strip()
+        if not clean_name:
+            raise ValueError("Tag name cannot be empty")
+
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.execute(
+                    """
+                    UPDATE tags
+                    SET name = ?
+                    WHERE id = ?
+                    """,
+                    (clean_name, tag_id),
+                )
+
+    def delete_tag(self, tag_id: int) -> None:
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.execute(
+                    "DELETE FROM tags WHERE id = ?",
+                    (tag_id,),
+                )
+
+    def assign_tag_to_asset(
+        self,
+        asset_id: int,
+        tag_name: str,
+        color: str = "",
+        description: str = "",
+    ) -> int:
+        tag_id = self.create_tag(
+            name=tag_name,
+            color=color,
+            description=description,
+        )
+
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.execute(
+                    """
+                    INSERT INTO asset_tags (
+                        asset_id,
+                        tag_id,
+                        created_at
+                    )
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(asset_id, tag_id) DO NOTHING
+                    """,
+                    (asset_id, tag_id, self.now_iso()),
+                )
+
+        return tag_id
+
+    def remove_tag_from_asset(
+        self,
+        asset_id: int,
+        tag_id: int,
+    ) -> None:
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.execute(
+                    """
+                    DELETE FROM asset_tags
+                    WHERE asset_id = ? AND tag_id = ?
+                    """,
+                    (asset_id, tag_id),
+                )
+
+    def list_asset_tags(
+        self,
+        asset_id: int,
+    ) -> list[TagRecord]:
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    t.id,
+                    t.name,
+                    t.color,
+                    t.description,
+                    t.created_at
+                FROM tags AS t
+                INNER JOIN asset_tags AS at
+                    ON at.tag_id = t.id
+                WHERE at.asset_id = ?
+                ORDER BY t.name COLLATE NOCASE
+                """,
+                (asset_id,),
+            ).fetchall()
+
+        return [
+            TagRecord(
+                id=row["id"],
+                name=row["name"],
+                color=row["color"],
+                description=row["description"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+    def list_assets_for_tag(self, tag_id: int) -> list[IndexedAsset]:
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    a.id,
+                    a.library_root,
+                    a.root_path,
+                    a.package_path,
+                    a.relative_path,
+                    a.category,
+                    a.extension,
+                    a.size_bytes,
+                    a.modified_ns,
+                    a.package_hash,
+                    a.indexed_at
+                FROM assets AS a
+                INNER JOIN asset_tags AS at
+                    ON at.asset_id = a.id
+                WHERE at.tag_id = ?
+                ORDER BY a.category COLLATE NOCASE,
+                         a.relative_path COLLATE NOCASE
+                """,
+                (tag_id,),
+            ).fetchall()
+
+        return [self._row_to_asset(row) for row in rows]
