@@ -7,7 +7,7 @@ LayerVault aims to provide a reliable foundation for personal productions, short
 
 ## Status
 
-> **Early development**
+**Early development**
 
 The first milestone is called **USD Lab**.
 It focuses on:
